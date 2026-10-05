@@ -16,7 +16,7 @@ This repository implements a pixel-wise unsupervised semantic land-surface
 classification pipeline for Sentinel-2 Level-2A multispectral imagery.
 The method combines k-means clustering with data-adaptive multi-class Otsu
 thresholding to produce interpretable land-surface maps for nature-based
-solution (NbS) planning in flood-prone Mediterranean landscapes.
+solution (NbS) planning.
 
 **Seven semantic classes are produced:**
 
