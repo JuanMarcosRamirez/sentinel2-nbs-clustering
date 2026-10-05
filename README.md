@@ -88,7 +88,7 @@ B1/B9 excluded):
 
 ### DEM GeoTIFF
 
-Any co-registered elevation raster in metres stored as a single-band
+Any elevation raster in metres stored as a single-band
 GeoTIFF.  The paper uses TanDEM-X at 90 m resampled to 20 m.
 
 ---
@@ -102,7 +102,7 @@ GeoTIFF.  The paper uses TanDEM-X at 90 m resampled to 20 m.
 python run_pipeline.py
 ```
 
-The script produces 9 figures and prints Otsu thresholds, the
+The script produces 6 figures and prints Otsu thresholds, the
 cluster-to-label mapping, and a class area summary to stdout.
 
 ---
@@ -140,7 +140,7 @@ index 8 = B7 (Red-Edge 3, 783 nm).
 
 ---
 
-## Citation
+<!-- ## Citation
 
 ```bibtex
 @article{ramirez2026sentinel2,
@@ -154,6 +154,7 @@ index 8 = B7 (Red-Edge 3, 783 nm).
 ```
 
 ---
+-->
 
 ## License
 
