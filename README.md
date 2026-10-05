@@ -53,7 +53,7 @@ solution (NbS) planning.
 ## Installation
 
 ```bash
-git clone https://github.com/<your-org>/sentinel2-nbs-clustering.git
+git clone https://github.com/JuanMarcosRamirez/sentinel2-nbs-clustering.git
 cd sentinel2-nbs-clustering
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
