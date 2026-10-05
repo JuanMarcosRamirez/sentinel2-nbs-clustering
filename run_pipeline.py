@@ -4,7 +4,7 @@ run_pipeline.py
 ===============
 End-to-end pipeline for Sentinel-2 rule-based semantic clustering.
 
-This script reproduces the results reported in:
+Reproduces the results reported in:
 
     Ramírez et al. (2026). "Sentinel-2 Rule-based Semantic Clustering
     for Zone Identification Supporting Nature-Based Solutions in
@@ -12,167 +12,192 @@ This script reproduces the results reported in:
 
 Usage
 -----
-Edit the ``# --- USER CONFIGURATION ---`` block below to point to your
-Sentinel-2 GeoTIFF and DEM files, then run:
+Edit the USER CONFIGURATION block below to point to your GeoTIFF files,
+then run:
 
     python run_pipeline.py
 
-All intermediate and final outputs are displayed as Matplotlib figures.
+Output figures (in order)
+--------------------------
+1. k-means cluster map (before cloud masking)          → Sentinel2d palette
+2. k-means cluster map (after SCL cloud masking)       → Sentinel2d palette
+3. Semantic classification map (full scene)            → Sentinel2b palette
+4. SCL classification map                              → scl palette
+5. Semantic map — valley zone  (DEM ≤ 300 m)           → Sentinel2b palette
+6. Semantic map — upland zone  (DEM ≥ 300 m)           → Sentinel2b palette
+
 Area statistics are printed to stdout.
 
 Data requirements
 -----------------
-Sentinel-2 GeoTIFF (``S2_PATH``):
-    Multi-band GeoTIFF at 20-m resolution containing 10 layers in the
-    band order documented in ``src/features.py``.
-
-DEM GeoTIFF (``DEM_PATH``):
-    Single-band GeoTIFF co-registered with the Sentinel-2 grid,
-    containing elevation values in metres.
+S2_PATH  : Multi-band Sentinel-2 Level-2A GeoTIFF at 20 m (13 layers).
+           Band order is documented in src/features.py.
+DEM_PATH : Single-band GeoTIFF co-registered with the Sentinel-2 grid,
+           elevation values in metres.
 """
 
 import numpy as np
-import tifffile
-
-from src.features          import build_feature_matrix, FEATURE_NAMES
-from src.clustering        import (preprocess, run_kmeans,
-                                   apply_cloud_mask,
-                                   compute_cluster_statistics)
-from src.semantic_labeling import (compute_otsu_thresholds,
-                                   label_clusters,
-                                   build_semantic_map,
-                                   area_summary)
-from src.visualization     import (plot_rgb_composite,
-                                   plot_cluster_map,
-                                   plot_semantic_map,
-                                   plot_elevation_stratified)
-
-# ---------------------------------------------------------------------------
-# --- USER CONFIGURATION ---
-# ---------------------------------------------------------------------------
-
-# Path to the Sentinel-2 Level-2A multi-band GeoTIFF (20 m, 10 bands)
-S2_PATH  = "data/sample/S2_20260419.tif"
-
-# Path to the co-registered DEM GeoTIFF (elevation in metres)
-DEM_PATH = "data/sample/DEM_model.tif"
-
-# Acquisition date label (used in figure titles)
-DATE_LABEL = "April 19, 2026"
-
-# Number of k-means clusters
-# k = 9 was selected based on cluster validity analysis (see paper §4.1)
-K = 9
-
-# Elevation threshold separating valley from upland zones (metres)
-ELEVATION_THRESHOLD = 300
-
-# ---------------------------------------------------------------------------
-# Step 0 – Load data
-# ---------------------------------------------------------------------------
-
-print(f"[1/6] Loading Sentinel-2 image: {S2_PATH}")
-raw = tifffile.imread(S2_PATH)         # shape (H, W, 10)
-
-print(f"      Scene size: {raw.shape[0]} × {raw.shape[1]} pixels")
-
-print(f"[2/6] Loading DEM: {DEM_PATH}")
-dem = tifffile.imread(DEM_PATH)        # shape (H, W)
-
-# ---------------------------------------------------------------------------
-# Step 1 – Feature extraction
-# ---------------------------------------------------------------------------
-
-print("[3/6] Extracting spectral bands and computing indices …")
-X_raw, scl, (H, W) = build_feature_matrix(raw)
-
-# Display the true-color composite as a visual reference
-plot_rgb_composite(raw, title=f"True-color composite — {DATE_LABEL}")
-
-# ---------------------------------------------------------------------------
-# Step 2 – Preprocessing and k-means clustering
-# ---------------------------------------------------------------------------
-
-print("[4/6] Preprocessing (median imputation + RobustScaler) …")
-X_scaled = preprocess(X_raw)
-
-print(f"      Running k-means with k = {K} …")
-cluster_labels = run_kmeans(X_scaled, k=K)
-
-# Display the raw (unsupervised) cluster map
-plot_cluster_map(cluster_labels, (H, W),
-                 title=f"k-means clusters (k={K}) — {DATE_LABEL}")
-
-# ---------------------------------------------------------------------------
-# Step 3 – Cloud masking
-# ---------------------------------------------------------------------------
-
-print("[5/6] Applying SCL-based cloud mask …")
-cluster_labels_masked = apply_cloud_mask(cluster_labels, scl)
-
-plot_cluster_map(cluster_labels_masked, (H, W),
-                 title=f"Cloud-corrected clusters — {DATE_LABEL}")
-
-# ---------------------------------------------------------------------------
-# Step 4 – Cluster statistics and Otsu thresholding
-# ---------------------------------------------------------------------------
-
-print("      Computing cluster-level median statistics …")
-cluster_stats = compute_cluster_statistics(X_raw, cluster_labels_masked,
-                                           FEATURE_NAMES)
-
-# Add the SCL median to cluster_stats so the cloud rule can be evaluated
 import pandas as pd
-scl_df = pd.DataFrame({"scl": scl, "cluster": cluster_labels_masked})
-scl_stats = (scl_df[scl_df["cluster"] != 36]
-             .groupby("cluster")["scl"]
-             .median())
-cluster_stats["scl"] = scl_stats
+import matplotlib.pyplot as plt
+import tifffile
+from skimage import exposure
 
-print("      Computing Otsu thresholds …")
-# Build a pixel-level DataFrame of non-cloud index values for thresholding
-non_cloud_mask = cluster_labels_masked != 36
-df_pixels = pd.DataFrame(X_raw[non_cloud_mask], columns=FEATURE_NAMES)
-thresholds = compute_otsu_thresholds(df_pixels, (H, W))
+from src.palettes          import label2color
+from src.features          import build_features, to_dataframe, preprocess
+from src.clustering        import run_kmeans, apply_cloud_mask, compute_cluster_stats
+from src.semantic_labeling import (compute_otsu_thresholds, label_clusters,
+                                   build_semantic_map, area_summary)
 
-print("\n      Otsu thresholds:")
-for idx, vals in thresholds.items():
-    formatted = ", ".join(f"{v:.4f}" for v in vals)
-    print(f"        {idx:8s}: [{formatted}]")
+# ===========================================================================
+# USER CONFIGURATION
+# ===========================================================================
 
-# ---------------------------------------------------------------------------
-# Step 5 – Semantic labeling
-# ---------------------------------------------------------------------------
+S2_PATH    = "data/2026-04-19_B1B2B3B4.tif"   # Sentinel-2 GeoTIFF
+DEM_PATH   = "data/DEM_model.tif"              # DEM GeoTIFF
 
-print("\n[6/6] Assigning semantic labels …")
-cluster_to_label = label_clusters(cluster_stats, thresholds)
+DATE_LABEL = "April 19, 2026"    # displayed in figure titles
+K          = 9                   # number of k-means clusters
+DEM_THRESH = 300                 # elevation boundary (metres)
 
-print("\n      Cluster → semantic label mapping:")
+# ===========================================================================
+# Step 0 — Load data
+# ===========================================================================
+
+print(f"Loading Sentinel-2 image : {S2_PATH}")
+data = tifffile.imread(S2_PATH)
+
+print(f"Loading DEM              : {DEM_PATH}")
+dem = tifffile.imread(DEM_PATH)
+
+# ===========================================================================
+# Step 1 — Feature extraction
+# ===========================================================================
+
+print("Extracting features …")
+feat = build_features(data)
+nx, ny, nz = feat.shape            # spatial dims and number of features
+
+df = to_dataframe(feat)            # shape (nx*ny, 17), columns = ALL_COLS
+
+# ===========================================================================
+# Step 2 — Preprocessing and k-means clustering
+# ===========================================================================
+
+print("Preprocessing (median imputation + RobustScaler) …")
+X = preprocess(df)                 # shape (nx*ny, 16), SCL excluded
+
+print(f"Running k-means (k={K}) …")
+df["cluster"] = run_kmeans(X, k=K)
+
+# Figure 1 — raw cluster map (before cloud masking)
+labelsx = df["cluster"].to_numpy()
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.imshow(label2color(labelsx.reshape(nx, ny), 'Sentinel2d'))
+ax.axis("off")
+ax.set_title(DATE_LABEL)
+plt.tight_layout()
+plt.show()
+
+# ===========================================================================
+# Step 3 — SCL cloud masking
+# ===========================================================================
+
+print("Applying SCL cloud mask …")
+df = apply_cloud_mask(df)          # sets cluster=36 for SCL {3,8,9,10}
+
+# Figure 2 — cloud-corrected cluster map
+labelsx = df["cluster"].to_numpy()
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.imshow(label2color(labelsx.reshape(nx, ny), 'Sentinel2d'))
+ax.axis("off")
+ax.set_title(DATE_LABEL)
+plt.tight_layout()
+plt.show()
+
+# ===========================================================================
+# Step 4 — Cluster statistics and Otsu thresholds
+# ===========================================================================
+
+print("Computing cluster statistics …")
+cluster_stats = compute_cluster_stats(df)
+
+print("Computing Otsu thresholds …")
+t = compute_otsu_thresholds(df, nx, ny)
+
+print("\nOtsu thresholds:")
+for name, vals in t.items():
+    print(f"  {name:10s}: {[round(v, 4) for v in vals]}")
+
+# ===========================================================================
+# Step 5 — Semantic labeling
+# ===========================================================================
+
+print("\nAssigning semantic labels …")
+cluster_to_label = label_clusters(cluster_stats, t)
+
+print("\nCluster → semantic label:")
 for cid in sorted(cluster_to_label):
-    print(f"        Cluster {cid:2d} → {cluster_to_label[cid]}")
+    print(f"  Cluster {cid:2d} → {cluster_to_label[cid]}")
 
-semantic_labels = build_semantic_map(cluster_labels_masked,
-                                     cluster_to_label)
+labels1 = df['cluster'].to_numpy()
+labels  = build_semantic_map(labels1, cluster_to_label)
 
-# ---------------------------------------------------------------------------
-# Step 6 – Outputs
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Step 6 — Outputs
+# ===========================================================================
 
-# Full-scene semantic map
-plot_semantic_map(semantic_labels, (H, W),
-                  title=f"Semantic classification — {DATE_LABEL}")
+# Figure 3 — full-scene semantic map
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.imshow(label2color(labels.reshape(nx, ny), 'Sentinel2b'))
+ax.axis("off")
+ax.set_title(DATE_LABEL)
+plt.tight_layout()
+plt.show()
 
-# Elevation-stratified maps
-plot_elevation_stratified(
-    semantic_labels.reshape(H, W),
-    dem,
-    elevation_threshold=ELEVATION_THRESHOLD,
-    title_valley=f"Valley zone (z < {ELEVATION_THRESHOLD} m) — {DATE_LABEL}",
-    title_upland=f"Upland zone (z ≥ {ELEVATION_THRESHOLD} m) — {DATE_LABEL}",
-)
+# Figure 4 — SCL map
+scl_map = label2color(df['scl'].to_numpy().reshape(nx, ny), 'scl')
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.imshow(scl_map)
+ax.axis("off")
+ax.set_title(DATE_LABEL)
+plt.tight_layout()
+plt.show()
 
-# Area statistics
-print("\n      Class area summary:")
-print(area_summary(semantic_labels).to_string(index=False))
+# --- DEM-stratified maps ---
+lab = labels.reshape(nx, ny)
+
+# Valley zone: pixels with DEM <= threshold keep their semantic label;
+# upland pixels are set to 7 (black in Sentinel2b palette).
+vl_model = np.zeros(dem.shape, dtype=int)
+vl_model[dem >  DEM_THRESH] = 7
+vl_model[dem <= DEM_THRESH] = lab[dem <= DEM_THRESH]
+
+# Figure 5 — valley semantic map
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.imshow(label2color(vl_model, 'Sentinel2b'))
+ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+# Upland zone: pixels with DEM >= threshold keep their semantic label;
+# valley pixels are set to 7 (black).
+mo_model = np.zeros(dem.shape, dtype=int)
+mo_model[dem <  DEM_THRESH] = 7
+mo_model[dem >= DEM_THRESH] = lab[dem >= DEM_THRESH]
+
+# Figure 6 — upland semantic map
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.imshow(label2color(mo_model, 'Sentinel2b'))
+ax.axis("off")
+plt.tight_layout()
+plt.show()
+
+# --- Area statistics ---
+print("\nClass area summary:")
+print(area_summary(labels).to_string(index=False))
+
+# --- Valley area (hectares) ---
+ha_valley = int(np.sum(dem < DEM_THRESH) * 4)
+print(f"\nValley area (DEM < {DEM_THRESH} m): {ha_valley:,} ha")
 
 print("\nDone.")

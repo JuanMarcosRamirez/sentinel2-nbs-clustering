@@ -1,99 +1,73 @@
 """
 clustering.py
 =============
-K-means clustering and cloud-pixel masking for Sentinel-2 imagery.
+K-means clustering and SCL-based cloud masking.
 
-The clustering pipeline follows three steps:
+The two steps implemented here follow the original code exactly:
 
-1. Preprocess  – replace invalid values with feature-wise medians and
-                 apply robust normalization (RobustScaler).
-2. Cluster     – fit k-means and assign every pixel to a cluster.
-3. Cloud mask  – reassign cloud/shadow pixels (SCL classes 3, 8, 9, 10)
-                 to a dedicated label that is distinct from all k-means
-                 cluster IDs.
+1. **K-means** — fit with ``random_state=0`` and ``n_init="auto"``, then
+   reorder cluster labels by ascending centroid L2-norm so the label
+   assignment is deterministic regardless of initialization order.
+
+2. **Cloud mask** — pixels whose SCL value belongs to
+   {3, 8, 9, 10} are reassigned to label 36 *after* clustering.
+   Label 36 lies outside the range [0, k-1] produced by k-means and is
+   therefore unambiguously distinct from all spectral clusters.
+   SCL classes masked:
+       3  = cloud shadow
+       8  = medium-probability cloud
+       9  = high-probability cloud
+       10 = thin cirrus
 
 References
 ----------
-Pedregosa et al. (2011) – scikit-learn.
+Pedregosa et al. (2011) – scikit-learn KMeans.
 """
 
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import RobustScaler
 
-
-# Label assigned to cloud-contaminated pixels after clustering.
-# Chosen to be outside the range [0, k-1] produced by k-means.
+# Integer label assigned to cloud/shadow pixels after clustering.
+# Must be outside [0, k-1]; chosen to match the original code.
 CLOUD_LABEL: int = 36
 
 # SCL class codes treated as cloud-contaminated.
-# 3  = cloud shadow
-# 8  = medium-probability cloud
-# 9  = high-probability cloud
-# 10 = thin cirrus
 CLOUD_SCL_CLASSES: tuple = (3, 8, 9, 10)
-
-
-def preprocess(X: np.ndarray) -> np.ndarray:
-    """
-    Replace invalid values and apply robust normalization.
-
-    Invalid values (±inf, NaN) are imputed with the column-wise median
-    before scaling.  :class:`~sklearn.preprocessing.RobustScaler`
-    centers each feature at its median and scales by its inter-quartile
-    range (IQR), making normalization resistant to outliers that are
-    common in multispectral index distributions.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (N, D)
-        Raw feature matrix (float32).
-
-    Returns
-    -------
-    X_scaled : np.ndarray, shape (N, D)
-        Normalized feature matrix ready for k-means.
-    """
-    # Convert to DataFrame for convenient column-wise median imputation
-    df = pd.DataFrame(X)
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.fillna(df.median(axis=0), inplace=True)
-
-    scaler = RobustScaler()
-    return scaler.fit_transform(df.values)
 
 
 def run_kmeans(X_scaled: np.ndarray, k: int = 9,
                random_state: int = 0) -> np.ndarray:
     """
-    Fit k-means on the normalized feature matrix.
+    Fit k-means on the normalized feature matrix and return pixel labels
+    reordered by ascending centroid L2-norm.
 
-    Cluster labels are reordered by ascending centroid L2-norm so that
-    the mapping from cluster ID to spectral brightness is deterministic
-    and reproducible regardless of the random initialization.
+    Reordering makes the cluster-ID → color mapping deterministic: the
+    cluster whose centroid has the smallest norm always receives ID 0,
+    so the qualitative cluster map looks the same across runs with
+    different random seeds.
 
     Parameters
     ----------
-    X_scaled : np.ndarray, shape (N, D)
-        Output of :func:`preprocess`.
+    X_scaled : np.ndarray, shape (N, 16)
+        Normalized feature matrix from
+        :func:`~features.preprocess`.
     k : int, default 9
-        Number of clusters.  The value k = 9 was selected based on a
-        cluster validity analysis using Silhouette, CH-index, DB-index,
-        ARI, and NMI (see paper Section 4.1).
+        Number of clusters.  k = 9 was selected via cluster validity
+        analysis (Silhouette, CH, DB, ARI, NMI); see paper Section 4.1.
     random_state : int, default 0
-        Seed for the k-means centroid initialization, ensuring that
-        results are fully reproducible.
+        Seed for centroid initialization, ensuring full reproducibility.
 
     Returns
     -------
     labels : np.ndarray, shape (N,), dtype uint8
-        Cluster identifier for each pixel, in [0, k-1].
+        Reordered cluster IDs in [0, k-1].
     """
-    kmeans = KMeans(n_clusters=k, random_state=random_state, n_init="auto")
+    kmeans = KMeans(n_clusters=k, random_state=random_state,
+                    n_init="auto")
     raw_labels = kmeans.fit_predict(X_scaled)
 
-    # Reorder labels by ascending centroid norm for deterministic output
+    # Reorder labels so cluster 0 = smallest centroid norm, etc.
     centroid_norms = np.linalg.norm(kmeans.cluster_centers_, axis=1)
     order   = np.argsort(centroid_norms)
     mapping = np.empty_like(order)
@@ -102,63 +76,53 @@ def run_kmeans(X_scaled: np.ndarray, k: int = 9,
     return mapping[raw_labels].astype(np.uint8)
 
 
-def apply_cloud_mask(labels: np.ndarray,
-                     scl: np.ndarray) -> np.ndarray:
+def apply_cloud_mask(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Reassign cloud-contaminated pixels to :data:`CLOUD_LABEL`.
+    Reassign cloud-contaminated pixels to :data:`CLOUD_LABEL` in the
+    ``cluster`` column of the pixel DataFrame.
 
-    Pixels whose SCL value belongs to :data:`CLOUD_SCL_CLASSES` are
-    overwritten after clustering.  This prevents cloud and cloud-shadow
-    reflectance from being interpreted as a meaningful land-surface
-    class during semantic labeling.
+    The mask is applied *in place on a copy* so the original DataFrame
+    is not modified.
 
     Parameters
     ----------
-    labels : np.ndarray, shape (N,)
-        Cluster labels from :func:`run_kmeans`.
-    scl : np.ndarray, shape (N,), dtype uint8
-        Flat Scene Classification Layer values.
+    df : pd.DataFrame
+        Must contain columns ``'scl'`` and ``'cluster'``.
 
     Returns
     -------
-    labels_masked : np.ndarray, shape (N,)
-        Updated label array with cloud pixels set to
-        :data:`CLOUD_LABEL`.
+    df_masked : pd.DataFrame
+        Copy of ``df`` with cloud pixels set to :data:`CLOUD_LABEL`.
     """
-    labels_masked = labels.copy()
-    cloud_pixels  = np.isin(scl, CLOUD_SCL_CLASSES)
-    labels_masked[cloud_pixels] = CLOUD_LABEL
-    return labels_masked
+    df_masked = df.copy()
+    cloud_mask = (
+        (df_masked['scl'] == 3)  |
+        (df_masked['scl'] == 8)  |
+        (df_masked['scl'] == 9)  |
+        (df_masked['scl'] == 10)
+    )
+    df_masked.loc[cloud_mask, 'cluster'] = CLOUD_LABEL
+    return df_masked
 
 
-def compute_cluster_statistics(X_raw: np.ndarray,
-                                labels: np.ndarray,
-                                feature_names: list) -> pd.DataFrame:
+def compute_cluster_stats(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute cluster-level median statistics from the original
-    (non-normalized) feature values.
+    Compute the cluster-level median of every feature column.
 
     The median is used instead of the mean to reduce sensitivity to
-    atypical pixels and outliers within each cluster.
+    atypical pixels and residual outliers within each cluster.
+    Cloud pixels (cluster == :data:`CLOUD_LABEL`) are included so the
+    cloud rule in semantic labeling can fire on them if needed, but in
+    practice the SCL cloud mask handles them before this stage.
 
     Parameters
     ----------
-    X_raw : np.ndarray, shape (N, D)
-        Original feature matrix before normalization.
-    labels : np.ndarray, shape (N,)
-        Cluster labels (cloud-masked pixels are excluded from
-        statistics because their label equals :data:`CLOUD_LABEL`).
-    feature_names : list of str, length D
-        Column names matching the feature order in ``X_raw``.
+    df : pd.DataFrame
+        Pixel DataFrame with a ``'cluster'`` column (post-cloud-mask).
 
     Returns
     -------
-    stats : pd.DataFrame, shape (k, D)
-        Median value of each feature for each cluster.
-        Index is the cluster ID.
+    stats : pd.DataFrame
+        Shape (n_clusters, n_features), indexed by cluster ID.
     """
-    # Exclude cloud pixels from cluster statistics
-    mask = labels != CLOUD_LABEL
-    df   = pd.DataFrame(X_raw[mask], columns=feature_names)
-    df["cluster"] = labels[mask]
     return df.groupby("cluster").median(numeric_only=True)

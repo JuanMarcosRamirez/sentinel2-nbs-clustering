@@ -12,23 +12,23 @@ Funded by the Urban-Swarm Project (MICIU/AEI/EU, Grant PCI2025-167066-2).
 
 ## Overview
 
-This repository implements a pixel-wise, unsupervised semantic land-surface
+This repository implements a pixel-wise unsupervised semantic land-surface
 classification pipeline for Sentinel-2 Level-2A multispectral imagery.
-The method combines k-means clustering with data-adaptive Otsu thresholding
-to produce interpretable land-surface maps relevant to nature-based solution
-(NbS) planning in flood-prone Mediterranean landscapes.
+The method combines k-means clustering with data-adaptive multi-class Otsu
+thresholding to produce interpretable land-surface maps for nature-based
+solution (NbS) planning in flood-prone Mediterranean landscapes.
 
-The pipeline produces seven semantic classes:
+**Seven semantic classes are produced:**
 
-| ID | Class             | Color in figures |
-|----|-------------------|-----------------|
-|  0 | Sparse vegetation | Light green      |
-|  1 | Bare soil / Rock  | Light brown      |
-|  2 | Urban             | Red              |
-|  3 | Water             | Blue             |
-|  4 | Dense vegetation  | Dark green       |
-|  5 | Uncertain         | Magenta          |
-|  6 | Clouds            | White            |
+| ID | Class             | Color       |
+|----|-------------------|-------------|
+|  0 | Sparse vegetation | Light green |
+|  1 | Bare soil / Rock  | Tan         |
+|  2 | Urban             | Red         |
+|  3 | Water             | Blue        |
+|  4 | Dense vegetation  | Dark green  |
+|  5 | Uncertain         | Magenta     |
+|  6 | Clouds            | White       |
 
 ---
 
@@ -36,17 +36,15 @@ The pipeline produces seven semantic classes:
 
 ```
 .
-├── run_pipeline.py          # Main end-to-end script
+├── run_pipeline.py          # Main end-to-end script (single entry point)
 ├── src/
-│   ├── features.py          # Band extraction and spectral index computation
-│   ├── clustering.py        # Preprocessing, k-means, cloud masking
-│   ├── semantic_labeling.py # Otsu thresholds and decision rules
-│   └── visualization.py     # Color palettes and figure helpers
-├── data/
-│   └── sample/              # Place your GeoTIFF files here
-├── notebooks/
-│   └── walkthrough.ipynb    # Step-by-step Jupyter walkthrough (optional)
+│   ├── __init__.py
+│   ├── palettes.py          # Color palettes and label-to-RGB conversion
+│   ├── features.py          # Band extraction, spectral indices, preprocessing
+│   ├── clustering.py        # K-means, centroid reordering, SCL cloud mask
+│   └── semantic_labeling.py # Otsu thresholds, decision rules, class encoding
 ├── requirements.txt
+├── LICENSE
 └── README.md
 ```
 
@@ -55,15 +53,10 @@ The pipeline produces seven semantic classes:
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/<your-org>/sentinel2-nbs-clustering.git
 cd sentinel2-nbs-clustering
-
-# Create a virtual environment (recommended)
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-
-# Install dependencies
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -71,97 +64,79 @@ pip install -r requirements.txt
 
 ## Data preparation
 
-### Sentinel-2 Level-2A imagery
-Download cloud-free Level-2A products (< 30 % cloud cover) from the
+### Sentinel-2 Level-2A GeoTIFF
+
+Download Level-2A products (< 30% cloud cover) from the
 [Copernicus Data Space Ecosystem](https://dataspace.copernicus.eu).
 
-Resample all bands to 20 m and stack them into a single multi-band
-GeoTIFF with the following band order:
+Stack all bands into a single multi-band GeoTIFF at 20-m resolution in
+the following layer order (bands B2/B3/B4 resampled from 10 m;
+B1/B9 excluded):
 
 | Layer | Band | Wavelength | Region            |
-|-------|------|------------|-------------------|
-|   0   | SCL  | —          | Scene Class Layer |
-|   1   | B12  | 2190 nm    | SWIR-2            |
-|   2   | B11  | 1610 nm    | SWIR-1            |
-|   3   | B8A  |  865 nm    | Narrow NIR        |
-|   4   | B7   |  783 nm    | Red-Edge 3        |
-|   5   | B6   |  740 nm    | Red-Edge 2        |
-|   6   | B5   |  705 nm    | Red-Edge 1        |
-|   7   | B4   |  665 nm    | Red               |
-|   8   | B3   |  560 nm    | Green             |
-|   9   | B2   |  490 nm    | Blue              |
+|-------|------|-----------|-------------------|
+|   0   | SCL  | —         | Scene Class Layer |
+|   1   | B12  | 2190 nm   | SWIR-2            |
+|   2   | B11  | 1610 nm   | SWIR-1            |
+|   3   | B8A  |  865 nm   | Narrow NIR        |
+|   4   | B7   |  783 nm   | Red-Edge 3        |
+|   5   | B6   |  740 nm   | Red-Edge 2        |
+|   6   | B5   |  705 nm   | Red-Edge 1        |
+|   7   | B4   |  665 nm   | Red               |
+|   8   | B3   |  560 nm   | Green             |
+|   9   | B2   |  490 nm   | Blue              |
 
-Bands B2, B3, B4 (native 10 m) must be resampled to 20 m before
-stacking. Bands B1 and B9 (60 m) are excluded.
+### DEM GeoTIFF
 
-### Digital Elevation Model (DEM)
-The paper uses TanDEM-X (90 m), resampled to 20 m and co-registered
-with the Sentinel-2 grid. Any co-registered elevation raster in metres
-stored as a single-band GeoTIFF is accepted.
+Any co-registered elevation raster in metres stored as a single-band
+GeoTIFF.  The paper uses TanDEM-X at 90 m resampled to 20 m.
 
 ---
 
 ## Running the pipeline
 
-1. Place your GeoTIFF files in `data/sample/` (or update the paths in
-   `run_pipeline.py`).
-2. Edit the `USER CONFIGURATION` block at the top of `run_pipeline.py`.
-3. Run:
+1. Update `S2_PATH` and `DEM_PATH` in `run_pipeline.py`.
+2. Run:
 
 ```bash
 python run_pipeline.py
 ```
 
-The script prints Otsu thresholds, the cluster-to-label mapping, and a
-class area summary (km²), and displays six Matplotlib figures:
-
-1. True-color RGB composite
-2. Raw k-means cluster map
-3. Cloud-corrected cluster map
-4. Full-scene semantic classification map
-5. Valley-zone semantic map (z < 300 m)
-6. Upland-zone semantic map (z ≥ 300 m)
+The script produces 9 figures and prints Otsu thresholds, the
+cluster-to-label mapping, and a class area summary to stdout.
 
 ---
 
-## Key methodology notes
+## Methodology notes
 
-**k = 9 clusters** was selected by evaluating five complementary metrics
-(Silhouette, Calinski–Harabász, Davies–Bouldin, ARI, NMI) across k ∈
-{6, …, 12}. k = 9 achieves the highest ARI (0.93 ± 0.12) and NMI
-(0.93 ± 0.11) while retaining competitive geometric quality.
+### K-means — k = 9
+Selected by evaluating five complementary metrics (Silhouette,
+Calinski–Harabász, Davies–Bouldin, ARI, NMI) over k ∈ {6, …, 12}.
+k = 9 achieves the highest ARI (0.93 ± 0.12) and NMI (0.93 ± 0.11)
+while retaining competitive geometric cluster quality (paper §4.1).
 
-**Otsu thresholds** are computed independently for each spectral index
-from its scene-level pixel distribution, making the semantic rules
-self-calibrating across acquisition dates, seasons, and atmospheric
-conditions. The number of Otsu classes per index is:
+### Otsu thresholds
+`threshold_multiotsu` from scikit-image is applied to the 2-D spatial
+image of each index.  The number of classes per index:
 
-| Index  | Classes | Thresholds |
-|--------|---------|------------|
-| NDVI   |    4    | θ1, θ2, θ3 |
-| SWIR1  |    2    | θ1         |
-| MNDWI  |    2    | θ1         |
-| NDRE   |    2    | θ1         |
-| BSI    |    2    | θ1         |
-| NDBI   |    3    | θ1, θ2     |
-| UI     |    3    | θ1, θ2     |
-| SVC    |    3    | θ1, θ2     |
+| Index   | Classes | Thresholds        |
+|---------|---------|-------------------|
+| NDVI    |    4    | θ₁, θ₂, θ₃        |
+| SWIR1   |    2    | θ₁                |
+| MNDWI   |    2    | θ₁                |
+| NDRE_B5 |    2    | θ₁                |
+| NDBI    |    3    | θ₁, θ₂            |
+| BSI     |    2    | θ₁ (from NDBI col)|
+| UI      |    3    | θ₁, θ₂            |
+| SVC     |    3    | θ₁, θ₂            |
 
-**Cloud masking** uses SCL classes 3 (cloud shadow), 8 (medium-probability
-cloud), 9 (high-probability cloud), and 10 (thin cirrus).
+### Cloud masking
+SCL classes 3 (shadow), 8, 9, 10 (clouds/cirrus) → label 36.
 
----
-
-## Requirements
-
-See `requirements.txt`. Core dependencies:
-
-- `numpy`
-- `pandas`
-- `scikit-learn`
-- `scikit-image`
-- `tifffile`
-- `matplotlib`
+### NDRE band
+`ndre_b5` is computed as `(NIR − RED_EDGE[:,:,2]) / (NIR + RED_EDGE[:,:,2] + ε)`,
+where `RED_EDGE[:,:,2]` is the third slice of `data[:,:,6:9]` = layer
+index 8 = B7 (Red-Edge 3, 783 nm).
 
 ---
 
@@ -169,12 +144,12 @@ See `requirements.txt`. Core dependencies:
 
 ```bibtex
 @article{ramirez2026sentinel2,
-  author    = {Ram{\'i}rez, Juan Marcos and Aguilar, Jose and
-               Paredes, Maylen and Fern{\'a}ndez-Anta, Antonio},
-  title     = {Sentinel-2 Rule-based Semantic Clustering for Zone
-               Identification Supporting Nature-Based Solutions
-               in Valencia, Spain},
-  year      = {2026},
+  author  = {Ram{\'i}rez, Juan Marcos and Aguilar, Jose and
+             Paredes, Maylen and Fern{\'a}ndez-Anta, Antonio},
+  title   = {Sentinel-2 Rule-based Semantic Clustering for Zone
+             Identification Supporting Nature-Based Solutions
+             in Valencia, Spain},
+  year    = {2026},
 }
 ```
 
@@ -182,4 +157,4 @@ See `requirements.txt`. Core dependencies:
 
 ## License
 
-This project is released under the MIT License. See `LICENSE` for details.
+MIT License — see `LICENSE`.
