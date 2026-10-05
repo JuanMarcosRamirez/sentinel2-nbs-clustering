@@ -23,7 +23,7 @@ solution (NbS) planning.
 | ID | Class             | Color       |
 |----|-------------------|-------------|
 |  0 | Sparse vegetation | Light green |
-|  1 | Bare soil / Rock  | Tan         |
+|  1 | Bare soil / Rock  | Light brown |
 |  2 | Urban             | Red         |
 |  3 | Water             | Blue        |
 |  4 | Dense vegetation  | Dark green  |
